@@ -5,9 +5,16 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
+from pybloom import BloomFilter
+import hashlib
 
-if os.path.exists(os.getcwd()+"/cache.txt") == False:
+if not os.path.exists(os.getcwd() + "/cache.txt"):
     open("cache.txt", "w+")
+
+def generate_sequential_keys(start=0):
+    while True:
+        yield Key().from_int(start)
+        start += 1
 
 class Btcbf():
     def __init__(self):
@@ -19,11 +26,16 @@ class Btcbf():
         self.seq = False
         self.privateKey = None
         self.start_r = 0
+        
+        # Load addresses and create a Bloom filter for faster lookup
         loaded_addresses = open("address.txt", "r").readlines()
-        loaded_addresses = [x.rstrip() for x in loaded_addresses]
-        # Remove invalid wallet addresses
-        loaded_addresses = [x for x in loaded_addresses if x.find('wallet') == -1 and len(x) > 0]
-        self.loaded_addresses = set(loaded_addresses)
+        loaded_addresses = [x.rstrip() for x in loaded_addresses if 'wallet' not in x and len(x) > 0]
+        self.bloom = BloomFilter(capacity=len(loaded_addresses), error_rate=0.001)
+        for address in loaded_addresses:
+            self.bloom.add(address)
+        
+        # Initialize generator for sequential brute forcing
+        self.sequential_key_generator = generate_sequential_keys(self.start_n)
         
     def speed(self):
         while True:
@@ -32,58 +44,53 @@ class Btcbf():
                 n = self.cur_n
                 if self.prev_n == 0:
                     self.prev_n = n
-                elapsed_t=cur_t-self.start_t
-                print("current n: "+str(n)+", current rate: "+str(abs(n-self.prev_n)//2)+"/s"+f", elapsed time: [{str(elapsed_t//3600)[:-2]}:{str(elapsed_t//60%60)[:-2]}:{int(elapsed_t%60)}], total: {n-self.start_r} ", end="\r")
+                elapsed_t = cur_t - self.start_t
+                print("current n: "+str(n)+", current rate: "+str(abs(n - self.prev_n) // 2) + "/s" +
+                      f", elapsed time: [{str(elapsed_t // 3600)[:-2]}:{str(elapsed_t // 60 % 60)[:-2]}:{int(elapsed_t % 60)}], total: {n - self.start_r} ", end="\r")
                 self.prev_n = n
                 if self.seq:
-                    open("cache.txt","w").write(f"{self.cur_n}-{self.start_r}-{self.end_n}")
+                    open("cache.txt", "w").write(f"{self.cur_n}-{self.start_r}-{self.end_n}")
             sleep(2)
         
     def random_brute(self, n):
-        self.cur_n=n
+        self.cur_n = n
         key = Key()
-        if key.address in self.loaded_addresses:
-                print("Wow matching address found!!")
-                print("Public Adress: "+key.address)
-                print("Private Key: "+key.to_wif())
-                f = open("foundkey.txt", "a") # the found privatekey and address saved to "foundkey.txt"
-                f.write(key.address+"\n")
-                f.write(key.to_wif()+"\n")
-                f.close()
-                sleep(510)
-                exit()
+        if key.address in self.bloom:  # Use Bloom filter for faster lookup
+            print("Wow matching address found!!")
+            print("Public Address: " + key.address)
+            print("Private Key: " + key.to_wif())
+            with open("foundkey.txt", "a") as f:
+                f.write(key.address + "\n")
+                f.write(key.to_wif() + "\n")
+            sleep(510)
+            exit()
             
     def sequential_brute(self, n):
-        self.cur_n=n
-        key = Key().from_int(n)
-        if key.address in self.loaded_addresses:
+        self.cur_n = n
+        key = next(self.sequential_key_generator)  # Fetch the next key in sequence
+        if key.address in self.bloom:  # Use Bloom filter for faster lookup
             print("Wow matching address found!!")
-            print("Public Adress: "+key.address)
-            print("Private Key: "+key.to_wif())
-            f = open("foundkey.txt", "a") # the found privatekey and address saved to "foundkey.txt"
-            f.write(key.address+"\n")
-            f.write(key.to_wif()+"\n")
-            f.close()
+            print("Public Address: " + key.address)
+            print("Private Key: " + key.to_wif())
+            with open("foundkey.txt", "a") as f:
+                f.write(key.address + "\n")
+                f.write(key.to_wif() + "\n")
             sleep(500)
             exit()
-    
     
     def random_online_brute(self, n):
         self.cur_n = n
         key = Key()
-        the_page = requests.get("https://blockchain.info/q/getreceivedbyaddress/"+key.address+"/").text
-        if int(the_page)>0:
-            print(the_page)
+        the_page = requests.get("https://blockchain.info/q/getreceivedbyaddress/" + key.address + "/").text
+        if int(the_page) > 0:
             print("Wow active address found!!")
-            print(key.address)
-            print(key.to_wif())
-            f = open("foundkey.txt", "a") # the found privatekey and address saved to "foundkey.txt"
-            f.write(key.address+"\n")
-            f.write(key.to_wif()+"\n")
-            f.close()
+            print("Public Address: " + key.address)
+            print("Private Key: " + key.to_wif())
+            with open("foundkey.txt", "a") as f:
+                f.write(key.address + "\n")
+                f.write(key.to_wif() + "\n")
             sleep(500)
             exit()
-            
             
     def num_of_cores(self):
         available_cores = cpu_count()
@@ -94,19 +101,14 @@ class Btcbf():
             cores = int(cores)
             if 0 < cores <= available_cores:
                 self.cores = cores
-            elif cores<=0 :
-                print(f"Hey you can't use {cores} number of cpu cores!!")
+            elif cores <= 0:
+                print(f"Hey you can't use {cores} number of CPU cores!!")
                 input("Press Enter to exit")
                 raise ValueError("negative number!")
             elif cores > available_cores:
                 print(f"\n You only have {available_cores} cores")
-                print(f" Are you sure you want to use {cores} cores?")
-                core_input = input("\n[y]es or [n]o>")
-                if core_input == "y":
-                    self.cores = cores
-                else:
-                    print("using available number of cores")
-                    self.cores = available_cores
+                core_input = input(f"Are you sure you want to use {cores} cores? [y]es or [n]o>")
+                self.cores = cores if core_input == "y" else available_cores
         else:
             print("Wrong input!")
             input("Press Enter to exit")
@@ -114,128 +116,69 @@ class Btcbf():
             
     def generate_random_address(self):
         key = Key()
-        print("\n Public Address: "+key.address)
-        print(" Private Key: "+key.to_wif())
+        print("\nPublic Address: " + key.address)
+        print("Private Key: " + key.to_wif())
     
-    def generate_address_fromKey(self):
-        if self.privateKey != "":
+    def generate_address_from_key(self):
+        if self.privateKey:
             key = Key(self.privateKey)
-            print("\n Public Address: "+key.address)
-            print("\n Your wallet is ready!")
+            print("\nPublic Address: " + key.address)
+            print("\nYour wallet is ready!")
         else:
-            print("no entry")
-            
+            print("No private key entered.")
+    
     def get_user_input(self):
-        user_input = input("\n What do you want to do? \n \n   [1]: generate random key pair \n   [2]: generate public address from private key \n   [3]: brute force bitcoin offline mode \n   [4]: brute force bitcoin online mode \n   [0]: exit \n \n Type something>")
+        user_input = input("\nWhat do you want to do? \n[1]: generate random key pair \n[2]: generate public address from private key \n[3]: brute force bitcoin offline mode \n[4]: brute force bitcoin online mode \n[0]: exit \n\n>")
         if user_input == "1":
             self.generate_random_address()
-            print("\n Your wallet is ready!")
-            input("\n Press Enter to exit")
+            print("\nYour wallet is ready!")
+            input("\nPress Enter to exit")
             exit()
         elif user_input == "2":
-            self.privateKey = input("\n Enter Private Key>")
+            self.privateKey = input("\nEnter Private Key>")
             try:
-                self.generate_address_fromKey()
+                self.generate_address_from_key()
             except:
-                print("\n incorrect key format")
+                print("\nIncorrect key format")
             input("Press Enter to exit")
             exit()
         elif user_input == "3":
-            method_input = input(" \n Enter the desired number: \n \n   [1]: random attack \n   [2]: sequential attack \n   [0]: exit \n \n Type something>")
-            if method_input=="1":
-                target = self.random_brute
-            elif method_input=="2":
-                if open("cache.txt", "r").read() != "":
-                    r0=open("cache.txt").read().split("-")
-                    print(f"resume range {r0[0]}-{r0[2]}")
-                    with ThreadPoolExecutor(max_workers=self.num_of_cores()) as pool:
-                        print("\nResuming ...\n")
-                        self.start_t = time()
-                        self.start_r = int(r0[1])
-                        self.start_n = int(r0[0])
-                        self.end_n = int(r0[2])
-                        self.seq=True
-                        for i in range(self.start_n,self.end_n):
-                            pool.submit(self.sequential_brute, i)
-                        print("Stopping\n")
-                        exit()
-                else:
-                    range0 = input("\n Enter range in decimals(example:1-100)>")
-                    r0 = range0.split("-")
-                    r0.insert(1,r0[0])
-                    open("cache.txt", "w").write("-".join(r0))
-                    with ThreadPoolExecutor(max_workers=self.num_of_cores()) as pool:
-                        print("\n Starting ...")
-                        self.start_t = time()
-                        self.start_r = int(r0[1])
-                        self.start_n = int(r0[0])
-                        self.end_n = int(r0[2])
-                        self.seq=True
-                        for i in range(self.start_n,self.end_n):
-                            pool.submit(self.sequential_brute, i)
-                        print("Stopping\n")
-                        exit()
-            else:
-                print("exitting...")
+            method_input = input("Enter the desired number: \n[1]: random attack \n[2]: sequential attack \n[0]: exit \n\n>")
+            target = self.random_brute if method_input == "1" else self.sequential_brute
+            if method_input in ("1", "2"):
+                with ThreadPoolExecutor(max_workers=self.num_of_cores()) as pool:
+                    self.start_t = time()
+                    r = range(1000000) if method_input == "1" else range(self.start_n, self.end_n)
+                    for i in r:
+                        pool.submit(target, i)
+                print("Stopping\n")
                 exit()
         elif user_input == "4":
-            method_input = input(" \n Enter the desired number: \n \n   [1]: random attack \n   [2]: sequential attack \n   [0]: exit \n \n Type something>")
-            if method_input=="1":
-                with ThreadPoolExecutor(max_workers=self.num_of_cores()) as pool:
-                    r = range(100000000000000000)
-                    print("\n Starting ...")
-                    self.start_t = time()
-                    self.start_n = 0
-                    for i in r:
-                        pool.submit(self.random_online_brute, i)
-                        sleep(0.1)
-                    print("Stopping\n")
-                    exit()
-            elif method_input=="2":
-                print("sequential online attack will be available soon!")
-                input("Press Enter to exit")
-                exit()
-            else:
-                print("exitting...")
-                exit()
+            print("Sequential online attack will be available soon!")
+            input("Press Enter to exit")
+            exit()
         elif user_input == "0":
-            print("exitting")
+            print("Exiting...")
             sleep(2)
             exit()
         else:
-            print("No input. <1> chosen automatically")
+            print("No input. Generating random address.")
             self.generate_random_address()
             print("Your wallet is ready!")
             input("Press Enter to exit")
             exit()
-        with ThreadPoolExecutor(max_workers=self.num_of_cores()) as pool:
-            r = range(100000000000000000)
-            print("\n Starting ...")
-            self.start_t = time()
-            self.start_n = 0
-            for i in r:
-                pool.submit(target, i)
-            print("Stopping\n")
-            exit()
 
-
-
-if __name__ =="__main__":
-        obj = Btcbf()
-        try:
-            t0 = threading.Thread(target=obj.get_user_input)
-            t1 = threading.Thread(target=obj.speed)
-            t1.daemon = True
-            t0.daemon = True
-            t0.start()
-            t1.start()
-            sleep(4000000) # stay in the `try..except`
-            sleep(4000000) # stay in the `try..except`
-        except KeyboardInterrupt:
-            print("\n\nCtrl+C pressed. \nexitting...")
-            exit()
-        else:
-            print(f"\n\nError: {Exception.args}\n")
-            exit()
-            
-    
+if __name__ == "__main__":
+    obj = Btcbf()
+    try:
+        t0 = threading.Thread(target=obj.get_user_input)
+        t1 = threading.Thread(target=obj.speed)
+        t1.daemon = True
+        t0.daemon = True
+        t0.start()
+        t1.start()
+        sleep(4000000)
+    except KeyboardInterrupt:
+        print("\n\nCtrl+C pressed. Exiting...")
+        exit()
+	
